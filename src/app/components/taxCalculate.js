@@ -4,6 +4,48 @@ import { newComputeDeductions, newComputeTax, newComputeTotalIncome } from "../t
 import { oldComputeDeductions, oldComputeTax, oldComputeTotalIncome } from "../tax/oldRegimeCompute";
 import { useEffect, useState } from "react";
 
+const sanitizePdfText = (value) => String(value ?? '').replace(/[^\x20-\x7E]/g, ' ');
+
+const escapePdfText = (value) => sanitizePdfText(value).replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)');
+
+const createPdfDocument = (lines) => {
+    let contentStream = `BT\n/F1 18 Tf\n50 760 Td\n(${escapePdfText(lines[0])}) Tj\n/F1 11 Tf\n`;
+
+    lines.slice(1).forEach((line) => {
+      contentStream += `0 -16 Td\n(${escapePdfText(line)}) Tj\n`;
+    });
+
+    contentStream += 'ET';
+
+    const objects = [
+      '<< /Type /Catalog /Pages 2 0 R >>',
+      '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+      '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>',
+      '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+      `<< /Length ${contentStream.length} >>\nstream\n${contentStream}\nendstream`,
+    ];
+
+    let pdf = '%PDF-1.4\n';
+    const offsets = [0];
+
+    objects.forEach((object, index) => {
+      offsets.push(pdf.length);
+      pdf += `${index + 1} 0 obj\n${object}\nendobj\n`;
+    });
+
+    const xrefOffset = pdf.length;
+    pdf += `xref\n0 ${objects.length + 1}\n`;
+    pdf += '0000000000 65535 f \n';
+
+    offsets.slice(1).forEach((offset) => {
+      pdf += `${String(offset).padStart(10, '0')} 00000 n \n`;
+    });
+
+    pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF`;
+
+    return pdf;
+};
+
 const TaxCalculate = () => {
     const [salary, setSalary] = useState(0)
     const [rentalIncome, setRentalIncome] = useState(0)
@@ -17,6 +59,9 @@ const TaxCalculate = () => {
   
     const [taxPayable, setTaxPayable] = useState(0)
     const [newTaxPayable, setNewTaxPayable] = useState(0)
+    const [calculationDetails, setCalculationDetails] = useState(null)
+    const [financeYear, setFinanceYear] = useState('');
+    const [age, setAge] = useState('');
   
   
     useEffect(() => {
@@ -36,6 +81,28 @@ const TaxCalculate = () => {
   
     }, [taxPayable, newTaxPayable])
   
+    const handleAmountChange = (setter) => (event) => {
+      setter(event.target.value)
+      setCalculationDetails(null)
+    };
+
+    const formatAmount = (amount) => {
+      const number = Number(amount);
+
+      if (!Number.isFinite(number)) {
+        return '0';
+      }
+
+      return number.toLocaleString('en-IN', { maximumFractionDigits: 2 });
+    };
+
+    const isCalculationValidForPdf = () => {
+      const numericValues = [salary, rentalIncome, otherIncome, section80C, section80D, hra, otherDeductions];
+
+      return Boolean(financeYear && age)
+        && numericValues.every((value) => value !== '' && Number.isFinite(Number(value)) && Number(value) >= 0)
+        && numericValues.some((value) => Number(value) > 0);
+    };
   
     const getTaxHandle = () => {
       const totalIncome = oldComputeTotalIncome(salary, rentalIncome, otherIncome);
@@ -51,24 +118,92 @@ const TaxCalculate = () => {
       const newTaxPayable = newComputeTax(newTaxableIncome);
       setNewTaxPayable(newTaxPayable)
   
+      if (isCalculationValidForPdf()) {
+        setCalculationDetails({
+          financeYear,
+          age,
+          salary,
+          rentalIncome,
+          otherIncome,
+          section80C,
+          section80D,
+          hra,
+          otherDeductions,
+          totalIncome,
+          totalDeductions,
+          taxableIncome,
+          taxPayable,
+          newTotalDeductions,
+          newTaxableIncome,
+          newTaxPayable,
+        })
+      } else {
+        setCalculationDetails(null)
+      }
+  
       console.log(`\n\nNewTaxable Income: ₹${newTaxableIncome}`);
   
   
     }
   
-    const [financeYear, setFinanceYear] = useState('');
+    const downloadPdfHandle = () => {
+      if (!calculationDetails) {
+        return;
+      }
+
+      const generatedOn = new Date().toLocaleString();
+      const pdfLines = [
+        'Income Tax Calculation Summary',
+        `Generated on: ${generatedOn}`,
+        '',
+        'Input Details',
+        `Financial Year: ${calculationDetails.financeYear}`,
+        `Age: ${calculationDetails.age}`,
+        `Income from Salary: Rs. ${formatAmount(calculationDetails.salary)}`,
+        `Rental Income: Rs. ${formatAmount(calculationDetails.rentalIncome)}`,
+        `Other Income: Rs. ${formatAmount(calculationDetails.otherIncome)}`,
+        `Total Income: Rs. ${formatAmount(calculationDetails.totalIncome)}`,
+        '',
+        'Deductions / Exemptions Entered',
+        `Section 80C: Rs. ${formatAmount(calculationDetails.section80C)}`,
+        `Section 80D: Rs. ${formatAmount(calculationDetails.section80D)}`,
+        `HRA: Rs. ${formatAmount(calculationDetails.hra)}`,
+        `Other Deductions: Rs. ${formatAmount(calculationDetails.otherDeductions)}`,
+        '',
+        'Old Regime Result',
+        `Total Deductions: Rs. ${formatAmount(calculationDetails.totalDeductions)}`,
+        `Taxable Income: Rs. ${formatAmount(calculationDetails.taxableIncome)}`,
+        `Final Tax Payable: Rs. ${formatAmount(calculationDetails.taxPayable)}`,
+        '',
+        'New Regime Result',
+        `Total Deductions: Rs. ${formatAmount(calculationDetails.newTotalDeductions)}`,
+        `Taxable Income: Rs. ${formatAmount(calculationDetails.newTaxableIncome)}`,
+        `Final Tax Payable: Rs. ${formatAmount(calculationDetails.newTaxPayable)}`,
+      ];
+      const pdfContent = createPdfDocument(pdfLines);
+      const blob = new Blob([pdfContent], { type: 'application/pdf' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+
+      link.href = url;
+      link.download = 'income-tax-calculation.pdf';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    };
   
     const handleFinanceYearChange = (event) => {
       const year = event.target.value;
       setFinanceYear(year);
+      setCalculationDetails(null)
   
     };
-  
-    const [age, setAge] = useState('');
   
     const handleAgeChange = (event) => {
       const age = event.target.value;
       setAge(age);
+      setCalculationDetails(null)
   
     };
   
@@ -171,17 +306,17 @@ const TaxCalculate = () => {
 
           <div class="flex-col gap-2">
             <p class="text-left">Income from Salary </p>
-            <input type="number" class="w-40 p-2 border border-blue-200 rounded focus:outline-blue-700" placeholder="Enter Amount Rs" value={salary} onChange={e => setSalary(e.target.value)} />
+            <input type="number" class="w-40 p-2 border border-blue-200 rounded focus:outline-blue-700" placeholder="Enter Amount Rs" value={salary} onChange={handleAmountChange(setSalary)} />
           </div>
 
           <div class="flex-col gap-2">
             <p class="text-left"> Rental Income </p>
-            <input type="number" class="w-40 p-2 border border-blue-200 rounded focus:outline-blue-700" placeholder="Enter Amount Rs" value={rentalIncome} onChange={e => setRentalIncome(e.target.value)} />
+            <input type="number" class="w-40 p-2 border border-blue-200 rounded focus:outline-blue-700" placeholder="Enter Amount Rs" value={rentalIncome} onChange={handleAmountChange(setRentalIncome)} />
           </div>
 
           <div class="flex-col gap-2">
             <p class="text-left">Other Income</p>
-            <input type="number" class="w-40 p-2 border border-blue-200 rounded focus:outline-blue-700" placeholder="Enter Amount Rs" value={otherIncome} onChange={e => setOtherIncome(e.target.value)} />
+            <input type="number" class="w-40 p-2 border border-blue-200 rounded focus:outline-blue-700" placeholder="Enter Amount Rs" value={otherIncome} onChange={handleAmountChange(setOtherIncome)} />
           </div>
 
 
@@ -196,23 +331,23 @@ const TaxCalculate = () => {
 
           <div class="flex-col gap-2">
             <p class="text-left">Section 80C </p>
-            <input type="number" class=" w-40 p-2 border border-blue-200 rounded focus:outline-blue-700" placeholder="Enter Amount Rs" value={section80C} onChange={e => setSection80C(e.target.value)} />
+            <input type="number" class=" w-40 p-2 border border-blue-200 rounded focus:outline-blue-700" placeholder="Enter Amount Rs" value={section80C} onChange={handleAmountChange(setSection80C)} />
           </div>
 
           <div class="flex-col gap-2">
             <p class="text-left"> Section 80D </p>
-            <input type="number" class="w-40 p-2 border border-blue-200 rounded focus:outline-blue-700" placeholder="Enter Amount Rs" value={section80D} onChange={e => setSection80D(e.target.value)} />
+            <input type="number" class="w-40 p-2 border border-blue-200 rounded focus:outline-blue-700" placeholder="Enter Amount Rs" value={section80D} onChange={handleAmountChange(setSection80D)} />
           </div>
 
           <div class="flex-col gap-2">
             <p class="text-left">HRA</p>
-            <input type="number" class="w-40 p-2 border border-blue-200 rounded focus:outline-blue-700" placeholder="Enter Amount Rs" value={hra} onChange={e => setHra(e.target.value)} />
+            <input type="number" class="w-40 p-2 border border-blue-200 rounded focus:outline-blue-700" placeholder="Enter Amount Rs" value={hra} onChange={handleAmountChange(setHra)} />
           </div>
 
 
           <div class="flex-col gap-2">
             <p class="text-left">Other Deductions</p>
-            <input type="number" class="w-40 p-2 border border-blue-200 rounded focus:outline-blue-700" placeholder="Enter Amount Rs" value={otherDeductions} onChange={e => setOtherDeductions(e.target.value)} />
+            <input type="number" class="w-40 p-2 border border-blue-200 rounded focus:outline-blue-700" placeholder="Enter Amount Rs" value={otherDeductions} onChange={handleAmountChange(setOtherDeductions)} />
           </div>
 
 
@@ -238,6 +373,10 @@ const TaxCalculate = () => {
           </div>
 
           <button class=" mt-3 h-10 bg-blue-600 text-white p-2 rounded shadow-lg shadow-blue-400/100 hover:shadow-none transition duration-0.5 ease-in-out" onClick={getTaxHandle}>Calculate</button>
+
+          {calculationDetails && (
+            <button class=" mt-3 h-10 bg-green-600 text-white p-2 rounded shadow-lg shadow-green-400/100 hover:shadow-none transition duration-0.5 ease-in-out" onClick={downloadPdfHandle}>Download PDF</button>
+          )}
 
 
         </div>
