@@ -33,3 +33,15 @@ export const newComputeTax = (taxableIncome) => {
     tax += tax * 0.04
     return tax;
 };
+
+export const newComputeTaxDetails = (taxableIncome) => {
+    const tax = newComputeTax(taxableIncome);
+
+    return {
+        regime: 'new',
+        regimeLabel: 'New Regime',
+        taxableIncome: Number(taxableIncome),
+        tax,
+        payableTax: tax,
+    };
+};
