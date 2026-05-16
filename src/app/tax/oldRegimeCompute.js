@@ -28,3 +28,13 @@ export const oldComputeTax =(taxableIncome) => {
   tax += tax * 0.04
   return tax;
 };
+
+export const oldComputePayableTaxData = (taxableIncome) => {
+  const payableTax = oldComputeTax(taxableIncome);
+
+  return {
+    regime: "old",
+    taxableIncome: Number(taxableIncome),
+    payableTax,
+  };
+};
